@@ -1,0 +1,13 @@
+numpy>=2.0,<3
+scipy>=1.14,<2
+trimesh>=4.6,<6
+pillow>=11,<13
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+python-multipart>=0.0.20,<1
+pymeshlab>=2025.7
+manifold3d>=3.0,<4
+pycolmap>=3.13,<5
+scikit-image>=0.25,<1
+pytest>=8,<10
+httpx>=0.28,<1
