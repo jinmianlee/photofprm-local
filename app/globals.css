@@ -198,3 +198,49 @@ footer>span:first-child { display:flex; gap:6px; align-items:center; }
 @media(max-width:1190px) { .workspace { grid-template-columns:240px minmax(320px,1fr); gap:16px; padding:16px; } .settings-panel { grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr; gap:15px 35px; } .settings-panel .panel-title { grid-column:1/-1; margin-bottom:0; } .settings-fields { grid-row:span 4; } .settings-panel .generate { align-self:start; } .settings-panel .export-block { margin-top:0; } .steps { gap:15px; } .steps-note { display:none; } }
 @media(max-width:730px) { .topbar { padding:0 18px; height:76px; } .brand { font-size:21px; } .header-right { gap:10px; } .local-badge { display:none; } .header-right button { font-size:12px; max-width:80px; } .steps { overflow:auto; padding:15px 18px; gap:16px; min-height:60px; font-size:12px; } .step { gap:6px; } .step svg { margin-left:3px; } .step>span { width:20px; height:20px; } .workspace { display:flex; flex-direction:column; padding:13px; gap:14px; } .panel,.center-column { width:100%; } .source-panel { padding:17px; } .panel-title { margin-bottom:15px; } .capture-tip { padding-bottom:0; } .dropzone { min-height:160px; } .history { display:none; } .viewer { height:450px; min-height:0; } .viewer-empty h1 { font-size:26px; } .settings-panel { display:block; } .detail-heading .hint { display:none; } .viewer-bottom>span { font-size:10px; } footer { flex-direction:column; font-size:10px; padding:10px 17px; } .model-stats { gap:17px; } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
+
+/* Each workflow step owns its content; hidden panels must not become grid items. */
+[hidden] { display:none!important; }
+.wizard { max-width:1450px; margin:0 auto; grid-template-columns:minmax(340px,1fr) 360px; }
+.workflow-heading { grid-column:1/-1; padding:8px 0 12px; }
+.workflow-heading h1 { font-size:27px; font-weight:500; margin:8px 0; }
+.wizard.step-0 { display:block; max-width:840px; }
+.wizard.step-0 .source-panel { margin-top:14px; }
+.wizard .settings-panel { display:block; grid-column:auto; }
+.wizard .export-block { border-top:0; margin-top:0; padding-top:0; }
+.export-block .secondary { margin-top:22px; }
+.wizard.step-1 .viewer { height:460px; }
+.wizard.step-1 .viewer-empty h1 { font-size:25px; }
+.steps button { background:transparent; border:0; padding:12px 0; }
+.steps button:disabled { opacity:.45; }
+.connection-notice { margin:16px 24px 0; padding:12px 18px; border:1px solid #63533a; border-radius:8px; background:#2a2820; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+.library-workspace { padding:28px; max-width:1450px; margin:auto; }
+.task-manager .panel-title { align-items:flex-start; gap:18px; }
+.task-manager h2 { margin-bottom:10px; }
+.task-filters { display:flex; gap:12px; margin-bottom:16px; }
+.task-filters select { max-width:220px; }
+.task-row { display:flex; justify-content:space-between; gap:18px; padding:20px 0; border-top:1px solid #34413b; }
+.task-row>div:first-child { min-width:0; }
+.task-message { overflow-wrap:anywhere; max-width:700px; margin-top:6px; }
+.task-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; flex-wrap:wrap; }
+.danger { color:#f1b4a2; border-color:#755145; }
+.task-files { max-height:60vh; overflow:auto; }
+.task-files>div { display:flex; justify-content:space-between; gap:18px; padding:9px 0; border-bottom:1px solid #34413b; font-size:13px; }
+.task-files>div>span:first-child { overflow-wrap:anywhere; min-width:0; }
+.task-files>div>span:last-child { white-space:nowrap; }
+.pair-screen { min-height:100vh; display:grid; place-items:center; padding:20px; }
+.pair-screen form { width:min(100%,480px); display:grid; gap:18px; }
+.pair-screen h1 { font-size:27px; }
+@media(max-width:900px) {
+  .wizard { display:flex; flex-direction:column; padding:16px; }
+  .workflow-heading { width:100%; }
+  .wizard.step-1 .settings-panel { order:1; }
+  .wizard.step-1 .center-column { order:2; }
+  .wizard.step-1 .viewer { height:330px; min-height:0; }
+  .task-row { flex-direction:column; }
+  .task-actions { flex-shrink:1; }
+  .library-workspace { padding:14px; }
+  .header-right { gap:12px; }
+  .header-right button { max-width:none; }
+  .header-right .quiet-button { display:none; }
+}

@@ -1,0 +1,7 @@
+{
+  "ai_env": ".ai-env",
+  "conda": "C:/miniconda3/Scripts/conda.exe",
+  "model_dir": "models/hunyuan3d-2mini/hunyuan3d-dit-v2-mini-turbo",
+  "source_dir": "tools/hunyuan3d",
+  "rembg_dir": "models/rembg"
+}

@@ -9,9 +9,10 @@ import sys
 import time
 from file_io import write_json
 from shape_cache import generation_signature, record_shape
+from runtime_config import config as runtime_config
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = ROOT / 'models/hunyuan3d-2mini/hunyuan3d-dit-v2-mini-turbo'
+MODEL = runtime_config()['model_dir']
 WEIGHT_SHA = 'bdbcef30dd0149a281e17d5b5b1fdad1122c904e098a42f3100e04e03c247bc4'
 CONFIG_SHA = 'be28205844da01bd5d3c5ba5160f5886fb9765d542483f9d12bda8f17324db5e'
 
@@ -75,7 +76,7 @@ def main():
         from safetensors.torch import save_file
         from inference_checkpoint import load_checkpoint, save_checkpoint
         from cpu_volume import CPUVolumeDecoder
-        sys.path.insert(0, str(ROOT / 'tools/hunyuan3d'))
+        sys.path.insert(0, str(runtime_config()['source_dir']))
         from hy3dgen.shapegen.pipelines import Hunyuan3DDiTFlowMatchingPipeline, instantiate_from_config, export_to_trimesh
         from hy3dgen.shapegen.models.autoencoders import MCSurfaceExtractor
         from bounded_attention import install

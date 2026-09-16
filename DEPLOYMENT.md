@@ -1,71 +1,118 @@
-# 本地部署与恢复
+# 部署、启动与局域网使用
+
+PhotoForm 是有 Python 后端的本地应用。浏览器只是界面，模型电脑必须开机并运行服务。GitHub Pages 不能代替推理后端。完成首次安装和检查后，生成使用本地文件；同一电脑可以离线使用。
 
 ## 已部署电脑
 
-保持目录关系：
+- 本机使用：双击 `启动应用.cmd`，打开 `http://127.0.0.1:8765`。
+- 手机或另一台电脑：在模型电脑双击 `启动局域网.cmd`，使用窗口显示的局域网地址与访问码。
+- 提示模型未就绪：运行 `检查模型环境.cmd`，结果见 `data/engine-check.json`。
+- 关机或结束服务后地址不能继续使用；再次运行启动器即可，历史任务仍在 `data/`。
+- 已运行本机模式时，先在原服务窗口按 Ctrl+C，再启动局域网模式。重复启动会打开现有服务，不启动第二个推理服务。
 
-```text
-工作目录/
-├─ photo-to-print/                  # 此仓库
-├─ photo-to-print-runtime/          # 服务与几何处理 Python 环境
-├─ photo-to-print-xpu-conda/         # 当前单图推理环境
-└─ photo-to-print-ai-conda/          # 保留的 CPU 实验/渲染环境
-```
+## 另一台 Windows 电脑：基础应用
 
-双击 `启动应用.cmd`，打开 `http://127.0.0.1:8765`。控制台关闭后服务结束。仓库名可与本机目录名不同；运行环境、模型和 `data` 中本机验收记录需要保留。已有模型分色无需运行混元。
-
-## 在另一台 Windows 电脑准备基础应用
-
-需要 Python 3.12 x64、Node.js（满足 `package.json` 的 engines）、Git。终端进入仓库后运行：
+需要 Python 3.12 x64、Node.js 22.13 或更高版本、Git；单图 AI 还需要 Miniconda3 和兼容的 Intel XPU 硬件。实测机器为 Core Ultra 9 185H / Intel Arc 集显 / 32 GB 内存。**当前安装器针对 Intel XPU，尚未在 NVIDIA CUDA、AMD 或其他系统上验收。** 其他设备可以作为浏览器客户端连接兼容的模型电脑，或单独使用基础网格处理。
 
 ```powershell
+git clone https://github.com/jinmianlee/photofprm-local.git
+cd photofprm-local
 .\setup.ps1
-.\.venv\Scripts\python.exe start_app.py
 ```
 
-`setup.ps1` 安装固定的几何/服务依赖并构建界面，**不包含单图 AI 环境与权重**。若系统策略阻止执行脚本，可依次执行其中的 Python、pip、npm 命令；无需关闭系统安全策略。启动器优先使用 `.venv`，否则使用上一级 `photo-to-print-runtime`。
-
-## 单图引擎配置记录
-
-当前工作版本针对 Windows / Intel Arc XPU 验证，不能据此声称 CUDA、其他显卡或其他系统已经适配。
-
-| 项目 | 固定版本/位置 |
-|---|---|
-| Miniconda | 本机启动路径回退为 `C:/miniconda3/Scripts/conda.exe`；部分实验脚本需要按实际安装位置调整 |
-| Python 环境 | 上一级 `photo-to-print-xpu-conda` |
-| PyTorch / torchvision | `2.6.0+xpu` / `0.21.0+xpu`，来源 `https://download.pytorch.org/whl/xpu` |
-| 其他包 | `requirements-xpu-installed.txt`；基础应用 `requirements-lock.txt` |
-| 混元源代码 | `tools/hunyuan3d`，官方提交 `f8db63096c8282cb27354314d896feba5ba6ff8a` |
-| 模型仓库 | `tencent/Hunyuan3D-2mini`，提交 `f90a0f7df7d5e6f71109cf333f6a95a0ae3194a6` |
-| 模型目录 | `models/hunyuan3d-2mini/hunyuan3d-dit-v2-mini-turbo` |
-| 抠图 | `models/rembg/u2net.onnx`；官方 MD5 `60024c5c889badc19c04ad937298a77b` |
-
-Turbo `model.fp16.safetensors` 为 3,822,584,202 字节，SHA-256：
-
-```text
-bdbcef30dd0149a281e17d5b5b1fdad1122c904e098a42f3100e04e03c247bc4
-```
-
-对应 `config.yaml` SHA-256：
-
-```text
-be28205844da01bd5d3c5ba5160f5886fb9765d542483f9d12bda8f17324db5e
-```
-
-worker 加载前校验这两个文件，全程离线推理。用官方仓库取得匹配文件及许可证，不要替换为来历不明的整合包。
-
-旧 `scripts/prepare_single_photo.py` 和 `download_hunyuan_weight.py` 默认准备的是**标准 Mini / CPU 实验环境**，不能作为当前 Turbo 的一键安装器。`prepare_xpu_dependencies.py` 只补齐 XPU 环境的其他依赖，不安装显卡驱动。仓库还没有统一的跨设备单图安装/验收入口。
-
-新机器安装后先运行 `check_xpu_runtime.py`，再用自有照片运行 `foreground.py` 和 `single_photo_turbo.py`，检查实际网格并完成打印处理。浏览器是否开放单图由 `backend/single_photo.py` 检查本机真实验收记录；**不能通过手写“验证成功”绕过检查**。历史猫照/人物照验收脚本依赖未随仓库分发的私有样本，不能直接当作通用安装检查。
-
-## 开发与测试
+基础安装不包括 AI 环境和权重。如果执行策略阻止脚本，按以下等价命令操作，无需更改安全策略：
 
 ```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-lock.txt
 npm.cmd ci
+npm.cmd run build
+```
+
+此时可导入 PLY / GLB / STL。单图生成还需下面的 AI 环境。
+
+## A. 接入已有本地模型和 Conda 环境
+
+本机路径保存在 `photoform.json`，此文件不上传 GitHub。参考 `photoform.example.json`；相对路径以项目根目录为基准。可用命令配置并进行实际检查，不重复下载：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/configure_engine.py `
+  --conda "C:/miniconda3/Scripts/conda.exe" `
+  --ai-env "D:/AI/photoform-xpu" `
+  --model-dir "D:/AI/models/hunyuan3d-dit-v2-mini-turbo" `
+  --source-dir "D:/AI/Hunyuan3D-2" `
+  --rembg-dir "D:/AI/models/rembg"
+```
+
+替换为真实路径。`model_dir` 直接包含 Turbo `config.yaml` 和 `model.fp16.safetensors`；`source_dir` 包含官方 `hy3dgen/shapegen`；`rembg_dir` 包含 `u2net.onnx`。AI 环境需要本项目固定依赖；这不是 Ollama 模型目录。
+
+加 `--no-check` 可以仅保存路径，之后运行 `检查模型环境.cmd`。检查会校验模型哈希和官方源代码，导入推理管线，并比较实际 XPU 注意力计算与 CPU 参考结果。**通过只说明运行条件具备，不代表相似度、生成质量或实物打印已验收。** 不再要求复制旧猫照或手写历史验收文件。
+
+未配置时自动兼容原目录旁的 `photo-to-print-xpu-conda`，新部署默认使用仓库内 `.ai-env`。默认模型和源码位于 `models/`、`tools/hunyuan3d`。路径或文件变化后需要重新检查；推理时仍会完整校验模型哈希。
+
+## B. 从官方来源安装单图环境
+
+先安装 Miniconda3。如果 `conda` 不在 PATH，用上节的 `--conda` 和 `--no-check` 保存正确路径，再运行：
+
+```powershell
+# 可先查看计划；不下载、不修改环境
+.\.venv\Scripts\python.exe scripts/setup_turbo.py --dry-run
+
+# 安装环境、官方源码、Turbo/抠图权重并检查
+.\.venv\Scripts\python.exe scripts/setup_turbo.py
+```
+
+安装器从官方 PyTorch XPU 索引安装 `torch==2.6.0+xpu`、`torchvision==0.21.0+xpu`，其他包固定于 `requirements-xpu-installed.txt`。使用官方 Conda 频道；如果 Conda 要求确认许可，按其提示自行完成，再重跑命令。本应用不自动同意协议或修改驱动。
+
+Turbo 单个权重约 3.82 GB，还需运行环境、下载缓存、抠图模型和生成结果空间。网络失败后可按阶段重跑，`hf download` 会复用缓存；不会关闭 TLS 校验或添加杀毒白名单。
+
+```powershell
+.\.venv\Scripts\python.exe scripts/setup_turbo.py --stage dependencies
+.\.venv\Scripts\python.exe scripts/setup_turbo.py --stage source
+.\.venv\Scripts\python.exe scripts/setup_turbo.py --stage models
+.\.venv\Scripts\python.exe scripts/setup_turbo.py --stage check
+```
+
+本轮用已有官方文件完成了检查和生成。提供了全新安装脚本与固定版本，**但没有在另一台干净机器重新下载全部依赖**。旧 `prepare_single_photo.py` 默认准备标准 Mini CPU 实验，不是当前 Turbo 安装入口。
+
+## 局域网连接
+
+```powershell
+.\.venv\Scripts\python.exe start_app.py --lan
+# 多网卡未显示所需地址时，加入本机真实局域网 IP：
+.\.venv\Scripts\python.exe start_app.py --lan --allow-host 192.168.1.25
+```
+
+客户端与模型电脑连接同一可信家庭/办公网络，打开窗口显示的 `http://局域网IP:8765`，输入访问码。客户端不需要 Python、Conda 或模型。访问码保存在 `data/lan-key.txt`；它授予所有任务的查看和管理权限，不是多用户隔离系统。
+
+当前局域网 HTTP 没有链路加密，只用于可信私有网络，不要公网端口转发。互联网远程使用需另配 HTTPS、VPN/访问控制，本版不提供公网托管。Windows 若询问网络权限，仅允许预期的私有网络；应用不自动修改防火墙。无法连接时检查同网段、访客网络隔离及私有网络端口权限。
+
+浏览器摄像头通常要求安全上下文，普通局域网 HTTP 可能禁用摄像头。此时先用手机相机拍好，再“上传主体照片”；本机 localhost 拍摄入口仍可用。
+
+## 任务与文件
+
+右上角“任务与文件”显示全部任务，可搜索编号、筛选状态、查看磁盘占用及文件清单。已完成任务直接进入第三步；重新分色会创建新任务，保留旧结果。
+
+- **取消生成**：终止该任务的计算进程及子进程，保留照片、断点和已有模型。
+- **删除任务及文件**：任务停止后经确认永久删除其整个目录，包含输入、模型、缓存和日志。共享权重、其他任务和已下载到别处的副本不受影响。
+- 文件被切片器占用时，删除可能失败；关闭占用程序后重试。不自动清理已有任务。
+- 历史实验目录不属于正式任务库，其空间不计入任务总量，也不会在这里删除。
+
+## 固定文件与验证
+
+| 项目 | 固定值 |
+|---|---|
+| 官方源码 Tencent-Hunyuan/Hunyuan3D-2 | `f8db63096c8282cb27354314d896feba5ba6ff8a` |
+| 模型 tencent/Hunyuan3D-2mini | `f90a0f7df7d5e6f71109cf333f6a95a0ae3194a6` |
+| Turbo 权重 SHA-256 | `bdbcef30dd0149a281e17d5b5b1fdad1122c904e098a42f3100e04e03c247bc4` |
+| Turbo 配置 SHA-256 | `be28205844da01bd5d3c5ba5160f5886fb9765d542483f9d12bda8f17324db5e` |
+| U2Net 官方 MD5 | `60024c5c889badc19c04ad937298a77b` |
+
+开发检查：
+
+```powershell
 npm.cmd run build
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-需要热更新时，在基础服务运行的同时执行 `npm.cmd run dev`，访问输出的本地地址。测试需要可写临时目录；必要时将 pytest 的 `--basetemp` 指向工作区专用测试目录，勿指向含真实资料的文件夹。
-
-多角度路线另见 `安装重建引擎.ps1`。模型许可及官方入口见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，历史与精度限制见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。

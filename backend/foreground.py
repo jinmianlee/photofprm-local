@@ -5,9 +5,13 @@ import json
 import os
 from pathlib import Path
 import urllib.request
+try:
+    from .runtime_config import config
+except ImportError:
+    from runtime_config import config
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = ROOT / 'models' / 'rembg' / 'u2net.onnx'
+MODEL = config()['rembg_dir'] / 'u2net.onnx'
 URL = 'https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx'
 MD5 = '60024c5c889badc19c04ad937298a77b'
 

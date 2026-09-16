@@ -1,8 +1,12 @@
 @echo off
 cd /d "%~dp0"
 if exist ".venv\Scripts\python.exe" (
-  ".venv\Scripts\python.exe" start_app.py
+  ".venv\Scripts\python.exe" start_app.py %*
 ) else (
-  "..\photo-to-print-runtime\Scripts\python.exe" start_app.py
+  if exist "..\photo-to-print-runtime\Scripts\python.exe" (
+    "..\photo-to-print-runtime\Scripts\python.exe" start_app.py %*
+  ) else (
+    echo Python environment missing. Run setup.ps1 first.
+  )
 )
 pause

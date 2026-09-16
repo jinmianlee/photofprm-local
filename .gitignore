@@ -48,6 +48,8 @@ __pycache__/
 
 # Per-machine configuration and transient slicer output
 /engines.json
+/photoform.json
+/.ai-env/
 /result.json
 /.test-runs/
 *.key

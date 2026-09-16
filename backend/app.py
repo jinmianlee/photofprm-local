@@ -12,6 +12,9 @@ import threading
 import time
 import uuid
 import warnings
+import secrets
+import ipaddress
+from functools import wraps
 from urllib.parse import urlparse
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -22,10 +25,11 @@ from PIL import Image, ImageOps, ImageFilter, ImageStat
 from .settings import ROOT, DATA, engine_path, write_json
 from .file_io import read_json
 from .photo_region import PhotoRegion
+from .process_tree import ManagedProcess
 
-PROCESS_LOCK = threading.Lock()
+PROCESS_LOCK = threading.RLock()
 PROCESSES = {}
-ALLOWED_HOSTS = {'127.0.0.1', 'localhost', '[::1]'}
+ALLOWED_HOSTS = {'127.0.0.1', 'localhost', '::1'}
 MAX_UPLOAD = 1024 * 1024 * 1024
 MAX_FILE = 200 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 60_000_000
@@ -58,13 +62,19 @@ def job_dir(job_id):
     if not re.fullmatch(r'[0-9a-f]{32}', job_id):
         raise HTTPException(404, '任务不存在')
     path = DATA / job_id
-    if not path.is_dir():
+    if not path.is_dir() or path.is_symlink() or path.is_junction() or path.resolve().parent != DATA.resolve():
         raise HTTPException(404, '任务不存在')
     return path
 
 
 def state(path):
-    result = read_json(path / 'status.json')
+    try:
+        result = read_json(path / 'status.json')
+        if not isinstance(result, dict) or 'state' not in result:
+            raise ValueError('Invalid status')
+    except (OSError, ValueError):
+        result = {'id': path.name, 'kind': 'unknown', 'state': 'failed', 'progress': 0,
+                  'message': '任务记录缺失或损坏，可在任务管理中删除。'}
     with PROCESS_LOCK:
         process = PROCESSES.get(path.name)
         if result['state'] in ('running', 'queued') and (process is None or process.poll() is not None):
@@ -75,7 +85,13 @@ def state(path):
                 result.update(state='failed', message='任务进程已停止，可能因内存不足或应用重启。照片与日志仍保存在本地。', progress=0)
                 write_json(path / 'status.json', result)
     if (path / 'capture_report.json').exists():
-        result['capture'] = json.loads((path / 'capture_report.json').read_text('utf-8'))
+        try:
+            result['capture'] = read_json(path / 'capture_report.json')
+        except (OSError, ValueError):
+            pass
+    result.setdefault('id', path.name)
+    result.setdefault('kind', 'unknown')
+    result['updated_at'] = path.stat().st_mtime
     result['source_available'] = any((path / ('source'+ext)).exists() for ext in ('.ply', '.glb', '.stl'))
     result['source_file'] = next((f'source{ext}' for ext in ('.ply', '.glb', '.stl') if (path / ('source'+ext)).exists()), None)
     result['can_resume'] = (result.get('kind') == 'single' and result['state'] in ('failed', 'cancelled')
@@ -93,23 +109,40 @@ def launch(path, request):
         write_json(path / 'request.json', request)
         write_json(path / 'status.json', {'id': path.name, 'kind': request['kind'], 'state': 'queued', 'progress': 0, 'message': '任务已提交'})
         with (path / 'worker.log').open('wb') as log:
-            PROCESSES[path.name] = subprocess.Popen([sys.executable, '-u', '-m', 'backend.worker', str(path)],
+            PROCESSES[path.name] = ManagedProcess([sys.executable, '-u', '-m', 'backend.worker', str(path)],
                 cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                start_new_session=os.name != 'nt')
     return {'id': path.name}
 
 
 def stop_process(process):
+    if hasattr(process, 'terminate_tree'):
+        process.terminate_tree()
+        return
     if process.poll() is None:
         if os.name == 'nt':
             subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True,
                            creationflags=subprocess.CREATE_NO_WINDOW)
         else:
-            process.terminate()
+            import signal
+            os.killpg(process.pid, signal.SIGTERM)
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            process.kill()
+            if os.name != 'nt':
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+            process.wait(timeout=10)
+
+
+def serialized(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with PROCESS_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 @asynccontextmanager
@@ -133,15 +166,27 @@ async def local_only(request: Request, call_next):
     # Protect local file-processing endpoints against cross-site form submission
     # and DNS rebinding. No wildcard CORS. All browser API calls are same-origin.
     hostname = request.url.hostname
-    if hostname not in ALLOWED_HOSTS:
-        return JSONResponse({'detail': '仅允许从本机 localhost 访问'}, status_code=403)
+    lan = os.environ.get('PHOTOFORM_LAN') == '1'
+    allowed = ALLOWED_HOSTS | (set(os.environ.get('PHOTOFORM_ALLOWED_HOSTS', '').split(',')) if lan else set())
+    if hostname not in allowed:
+        return JSONResponse({'detail': '此访问地址未启用，请使用启动器显示的地址。'}, status_code=403)
     origin = request.headers.get('origin')
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
         if request.headers.get('x-photoform-client') != 'local':
             return JSONResponse({'detail': '缺少本地客户端标识'}, status_code=403)
-        if origin and (urlparse(origin).hostname not in ALLOWED_HOSTS or
-                       request.headers.get('sec-fetch-site') == 'cross-site'):
+        origin_url = urlparse(origin) if origin else None
+        same_origin = not origin_url or (origin_url.scheme == request.url.scheme and origin_url.netloc == request.url.netloc)
+        dev_origin = not lan and origin_url and origin_url.hostname in ALLOWED_HOSTS and origin_url.port == 5173
+        if not (same_origin or dev_origin) or request.headers.get('sec-fetch-site') == 'cross-site':
             return JSONResponse({'detail': '拒绝跨站点请求'}, status_code=403)
+    if lan and request.url.path.startswith('/api/') and request.url.path != '/api/connect':
+        try:
+            local_client = ipaddress.ip_address(request.client.host).is_loopback and hostname in ALLOWED_HOSTS
+        except (ValueError, AttributeError):
+            local_client = False
+        key = os.environ.get('PHOTOFORM_LAN_KEY', '')
+        if not local_client and (not key or not secrets.compare_digest(request.cookies.get('photoform_session', ''), key)):
+            return JSONResponse({'detail': '请输入服务电脑启动时显示的局域网访问码。'}, status_code=401)
     length = request.headers.get('content-length')
     if length:
         try:
@@ -152,12 +197,27 @@ async def local_only(request: Request, call_next):
     return await call_next(request)
 
 
+class Connection(BaseModel):
+    key: str = Field(max_length=200)
+
+
+@app.post('/api/connect')
+def connect(connection: Connection):
+    key = os.environ.get('PHOTOFORM_LAN_KEY', '')
+    if not key or not secrets.compare_digest(connection.key, key):
+        raise HTTPException(401, '访问码不正确')
+    response = JSONResponse({'connected': True})
+    response.set_cookie('photoform_session', key, httponly=True, samesite='strict', max_age=86400)
+    return response
+
+
 @app.get('/api/system')
 def system():
     from .single_photo import capability
     names = ['InterfaceCOLMAP', 'DensifyPointCloud', 'ReconstructMesh', 'RefineMesh']
     engines = {name: bool(engine_path(name)) for name in names}
-    return {'app': 'PhotoForm Local', 'version': '0.1.0', 'local': True,
+    return {'app': 'PhotoForm Local', 'version': '0.2.0', 'local': True,
+            'network_mode': 'lan' if os.environ.get('PHOTOFORM_LAN') == '1' else 'local',
             'mesh_ready': all(importlib.util.find_spec(x) for x in ('trimesh','manifold3d','scipy','skimage')),
             'reconstruction_ready': bool(importlib.util.find_spec('pycolmap')) and all(engines.values()),
             'engines': engines, 'backend': 'COLMAP + OpenMVS · CPU',
@@ -166,8 +226,53 @@ def system():
 
 @app.get('/api/jobs')
 def jobs():
-    paths = sorted(DATA.glob('*/status.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:30]
-    return [{k: v for k, v in state(p.parent).items() if k != 'report'} for p in paths]
+    result = []
+    for path in DATA.iterdir():
+        if not re.fullmatch(r'[0-9a-f]{32}', path.name):
+            continue
+        try:
+            path = job_dir(path.name)
+            item = {k: v for k, v in state(path).items() if k != 'report'}
+            item['storage_bytes'] = sum(p.stat().st_size for p in safe_files(path))
+            result.append(item)
+        except (OSError, HTTPException):
+            continue
+    return sorted(result, key=lambda item: item.get('started_at', item['updated_at']), reverse=True)
+
+
+def safe_files(path):
+    for directory, dirs, files in os.walk(path, followlinks=False):
+        dirs[:] = [d for d in dirs if not (Path(directory)/d).is_symlink() and not (Path(directory)/d).is_junction()]
+        for name in files:
+            file = Path(directory)/name
+            if not file.is_symlink() and file.resolve().is_relative_to(path.resolve()):
+                yield file
+
+
+@app.get('/api/jobs/{job_id}/files')
+def job_files(job_id: str):
+    path = job_dir(job_id)
+    return [{'name': file.relative_to(path).as_posix(), 'bytes': file.stat().st_size}
+            for file in sorted(safe_files(path))]
+
+
+@app.delete('/api/jobs/{job_id}')
+def delete_job(job_id: str):
+    # Delete only a server-generated task directory, never arbitrary paths.
+    with PROCESS_LOCK:
+        path = job_dir(job_id)
+        process = PROCESSES.get(job_id)
+        if process is not None and process.poll() is None:
+            raise HTTPException(409, '请先取消任务，等待进程停止后再删除。')
+        for directory, dirs, files in os.walk(path, followlinks=False):
+            if any((Path(directory)/name).is_symlink() or (Path(directory)/name).is_junction() for name in dirs + files):
+                raise HTTPException(409, '任务目录包含文件链接，请在本机检查后处理。')
+        try:
+            shutil.rmtree(path)
+        except OSError as error:
+            raise HTTPException(409, '文件可能正被切片器或其他程序使用，请关闭后重试删除。') from error
+        PROCESSES.pop(job_id, None)
+    return {'deleted': job_id}
 
 
 @app.get('/api/jobs/{job_id}')
@@ -206,7 +311,7 @@ async def upload(files: Annotated[list[UploadFile], File()],
     if kind == 'photos' and not system()['reconstruction_ready']:
         raise HTTPException(409, '本机尚未安装 OpenMVS，请先运行安装重建引擎脚本。')
     if kind == 'single' and not system()['single_photo']['ready']:
-        raise HTTPException(409, '混元 2mini 尚未通过本机生成验证，请等待安装和实测完成。')
+        raise HTTPException(409, system()['single_photo'].get('message', '请运行单图引擎检查。'))
     if any(p.poll() is None for p in PROCESSES.values()):
         raise HTTPException(409, '已有任务正在运行。')
     path = DATA / uuid.uuid4().hex
@@ -261,8 +366,11 @@ async def upload(files: Annotated[list[UploadFile], File()],
         write_json(path / 'image_quality.json', image_quality)
         return launch(path, {'kind': kind, 'source_file': source_name, 'options': opts})
     except HTTPException:
+        if not (path / 'status.json').exists():
+            write_json(path / 'status.json', {'id': path.name, 'kind': kind, 'state': 'failed', 'progress': 0, 'message': '上传未完成，可删除此任务后重新上传。'})
         raise
     except Exception as e:
+        write_json(path / 'status.json', {'id': path.name, 'kind': kind, 'state': 'failed', 'progress': 0, 'message': '文件无法解析，可删除此任务。'})
         raise HTTPException(422, '文件无法解析，请检查照片或模型格式。') from e
     finally:
         for file in files:
@@ -270,6 +378,7 @@ async def upload(files: Annotated[list[UploadFile], File()],
 
 
 @app.post('/api/jobs/{job_id}/reprocess')
+@serialized
 def reprocess(job_id: str, options: Options):
     old = job_dir(job_id)
     request = json.loads((old / 'request.json').read_text('utf-8'))
@@ -290,6 +399,7 @@ def reprocess(job_id: str, options: Options):
 
 
 @app.post('/api/jobs/{job_id}/refine')
+@serialized
 def refine(job_id: str, options: Options):
     old = job_dir(job_id)
     if not state(old)['can_refine']:
@@ -306,18 +416,24 @@ def refine(job_id: str, options: Options):
 
 @app.post('/api/jobs/{job_id}/cancel')
 def cancel(job_id: str):
-    path = job_dir(job_id)
-    process = PROCESSES.get(job_id)
-    if process is None or process.poll() is not None:
-        return state(path)
-    stop_process(process)
-    previous = state(path)
-    previous.update(state='cancelled', progress=0, message='任务已取消，输入文件已保留。')
-    write_json(path / 'status.json', previous)
-    return previous
+    with PROCESS_LOCK:
+        path = job_dir(job_id)
+        process = PROCESSES.get(job_id)
+        if process is None or process.poll() is not None:
+            return state(path)
+        stop_process(process)
+        if process.poll() is None:
+            raise HTTPException(409, '进程仍在停止，请稍后重试。')
+        previous = state(path)
+        if previous['state'] != 'complete':
+            previous.update(state='cancelled', progress=0, message='任务已取消，文件和已有断点保留；可在任务管理中删除。')
+            write_json(path / 'status.json', previous)
+        PROCESSES.pop(job_id, None)
+        return previous
 
 
 @app.post('/api/jobs/{job_id}/resume')
+@serialized
 def resume(job_id: str, options: Options):
     path = job_dir(job_id)
     if not state(path)['can_resume']:
@@ -350,7 +466,7 @@ def download(job_id: str, filename: str):
         if state(path)['state'] != 'complete':
             raise HTTPException(409, '模型尚未通过导出检查')
         target = path / 'output' / filename
-    if not target.is_file():
+    if not target.is_file() or not target.resolve().is_relative_to(path.resolve()):
         raise HTTPException(404, '文件不存在')
     return FileResponse(target, filename=filename)
 

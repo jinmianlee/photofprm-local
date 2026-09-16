@@ -10,6 +10,7 @@ from .settings import ROOT, DATA
 from .shape_cache import completed_shape
 from .job_timing import timed_phase
 from .file_io import read_json as read_json_file
+from .runtime_config import config, fingerprint
 
 ENV = ROOT.parent / 'photo-to-print-xpu-conda'
 CONDA = shutil.which('conda') or 'C:/miniconda3/Scripts/conda.exe'
@@ -25,25 +26,32 @@ def read_json(path):
 
 
 def capability():
-    validation = read_json(DATA / 'single-photo-validation.json')
-    download = read_json(DATA / 'weight-download.json')
-    installed = (ENV / 'python.exe').is_file() and WEIGHT.is_file() and WEIGHT.stat().st_size == 3822584202
-    installed = installed and (ROOT / 'models/rembg/u2net.onnx').is_file()
-    ready = bool(installed and validation.get('inference_validated') is True
-                 and validation.get('print_pipeline_validated') is True
-                 and validation.get('weight_sha256') == WEIGHT_SHA)
+    try:
+        c = config()
+        current = fingerprint(c)
+        weight = c['model_dir'] / 'model.fp16.safetensors'
+        installed = all(f['size'] is not None for f in current['files']) and weight.stat().st_size == 3822584202
+        check = read_json(DATA / 'engine-check.json')
+        ready = bool(installed and check.get('ready') is True and check.get('fingerprint') == current)
+        message = '本地单图引擎就绪' if ready else ('文件已找到，请运行“检查模型环境.cmd”验证当前环境。' if installed else '单图环境或模型文件缺失，请按 DEPLOYMENT.md 安装或配置已有路径。')
+        if not ready and check.get('error'):
+            message += ' 上次检查：' + str(check['error'])[:300]
+        size = weight.stat().st_size if weight.is_file() else 0
+    except (OSError, ValueError, TypeError) as error:
+        ready, installed, size = False, False, 0
+        message = '本机 photoform.json 配置无法读取：' + str(error)[:250]
     return {'ready': ready, 'installed': bool(installed), 'model': 'Hunyuan3D-2mini-Turbo',
-            'device': 'Intel Arc / XPU', 'download_bytes': WEIGHT.stat().st_size if WEIGHT.is_file() else 0,
+            'device': 'Intel Arc / XPU', 'download_bytes': size,
             'download_total': 3822584202,
-            'download_state': 'verified' if installed else download.get('state', 'pending'),
-            'message': '本地单图引擎就绪' if ready else '文件已安装，正在验证猫照推理' if installed else '正在安装本地单图引擎'}
+            'download_state': 'verified' if ready else 'check_required', 'message': message}
 
 
 def run_stage(arguments, update, job=None):
-    command = [CONDA, 'run', '--prefix', str(ENV), '--no-capture-output', 'python', '-u', *map(str, arguments)]
+    c = config()
+    command = [c['conda'], 'run', '--prefix', str(c['ai_env']), '--no-capture-output', 'python', '-u', *map(str, arguments)]
     environment = os.environ.copy()
     environment.update(PYTHONUTF8='1', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
-                       HF_HUB_DISABLE_TELEMETRY='1', U2NET_HOME=str(ROOT / 'models/rembg'))
+                       HF_HUB_DISABLE_TELEMETRY='1', U2NET_HOME=str(c['rembg_dir']))
     with subprocess.Popen(command, cwd=ROOT, env=environment,
                           stdout=sys.stdout, stderr=subprocess.STDOUT,
                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0) as process:

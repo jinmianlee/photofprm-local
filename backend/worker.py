@@ -83,6 +83,8 @@ def main(job):
 
 
 if __name__ == '__main__':
+    from .process_tree import wait_for_start
+    wait_for_start()
     # Keep Windows task logs readable and constrain numeric thread pools.
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
