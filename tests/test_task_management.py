@@ -54,6 +54,19 @@ def test_history_does_not_hide_older_tasks(client):
     assert len(client.get('/api/jobs').json()) == 40
 
 
+def test_resume_rejects_a_different_seed_without_mutating_original_request(client, monkeypatch):
+    path=task(status='cancelled')
+    module.write_json(path/'status.json',{'id':path.name,'kind':'single','state':'cancelled'})
+    request={'kind':'single','options':{'shape_steps':5,'shape_seed':12345}}
+    module.write_json(path/'request.json',request)
+    (path/'diffusion_checkpoint.safetensors').write_bytes(b'fixture')
+    calls=[]
+    monkeypatch.setattr(module,'launch',lambda *args:calls.append(args))
+    response=client.post('/api/jobs/'+path.name+'/resume',headers=H,json={'shape_seed':42})
+    assert response.status_code==409 and not calls
+    assert json.loads((path/'request.json').read_text('utf-8'))==request
+
+
 def test_links_cannot_escape_job_cleanup(client, tmp_path):
     path = task()
     outside = module.DATA/'shared'

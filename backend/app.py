@@ -20,7 +20,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, model_validator
 from PIL import Image, ImageOps, ImageFilter, ImageStat
 from .settings import ROOT, DATA, engine_path, write_json
 from .file_io import read_json
@@ -35,12 +35,19 @@ MAX_FILE = 200 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 60_000_000
 
 
+class PhotoLandmark(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    model: tuple[Annotated[float, Field(ge=-5, le=5)], Annotated[float, Field(ge=-5, le=5)], Annotated[float, Field(ge=-5, le=5)]]
+    photo: tuple[Annotated[float, Field(ge=0, le=1)], Annotated[float, Field(ge=0, le=1)]]
+
+
 class Options(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     size_mm: float = Field(100, ge=10, le=500)
     colors: int = Field(4, ge=1, le=8)
     pitch_mm: float = Field(0.8, ge=0.15, le=3)
     min_feature_mm: float = Field(0.8, ge=0.2, le=5)
+    merge_small_islands: bool = True
     image_size: int = Field(2400, ge=1200, le=6000)
     repair_small_holes: bool = False
     photo_pitch_deg: float = Field(25, ge=-45, le=60)
@@ -48,7 +55,21 @@ class Options(BaseModel):
     color_style: Literal['photo', 'flat'] = 'flat'
     photo_auto_align: bool = True
     mesh_resolution: Literal[255, 383] = 255
+    shape_engine: Literal['mini-turbo', 'shape-2.1'] = 'mini-turbo'
+    shape_steps: Literal[5, 10, 15, 30, 50] = 5
+    shape_seed: int = Field(12345, ge=0, le=2147483647)
+    photo_landmarks: list[PhotoLandmark] = Field(default_factory=list, max_length=8)
     palette_override: list[Annotated[str, Field(pattern=r'^#[0-9a-fA-F]{6}$')]] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode='after')
+    def landmark_count(self):
+        if self.photo_landmarks and len(self.photo_landmarks) < 3:
+            raise ValueError('At least three paired landmarks are required.')
+        if self.shape_engine == 'mini-turbo' and self.shape_steps not in (5, 10, 15):
+            raise ValueError('Mini Turbo supports 5, 10 or 15 steps.')
+        if self.shape_engine == 'shape-2.1' and self.shape_steps not in (30, 50):
+            raise ValueError('Shape 2.1 supports 30 or 50 steps.')
+        return self
 
 
 def parse_options(raw):
@@ -95,10 +116,12 @@ def state(path):
     result['source_available'] = any((path / ('source'+ext)).exists() for ext in ('.ply', '.glb', '.stl'))
     result['source_file'] = next((f'source{ext}' for ext in ('.ply', '.glb', '.stl') if (path / ('source'+ext)).exists()), None)
     result['can_resume'] = (result.get('kind') == 'single' and result['state'] in ('failed', 'cancelled')
-                            and (path / 'diffusion_checkpoint.safetensors').is_file())
+                            and ((path / 'diffusion_checkpoint.safetensors').is_file()
+                                 or (path / 'diffusion_resume.safetensors').is_file()))
     result['raw_shape_available'] = (path / 'generated_raw.ply').is_file()
     result['can_refine'] = (result['state'] == 'complete' and (path / 'foreground.png').is_file()
-                            and (path / 'diffusion_checkpoint.safetensors').is_file())
+                            and ((path / 'diffusion_checkpoint.safetensors').is_file()
+                                 or (path / 'shape_latents.safetensors').is_file()))
     return result
 
 
@@ -216,7 +239,7 @@ def system():
     from .single_photo import capability
     names = ['InterfaceCOLMAP', 'DensifyPointCloud', 'ReconstructMesh', 'RefineMesh']
     engines = {name: bool(engine_path(name)) for name in names}
-    return {'app': 'PhotoForm Local', 'version': '0.2.0', 'local': True,
+    return {'app': 'PhotoForm Local', 'version': '0.3.0', 'local': True,
             'network_mode': 'lan' if os.environ.get('PHOTOFORM_LAN') == '1' else 'local',
             'mesh_ready': all(importlib.util.find_spec(x) for x in ('trimesh','manifold3d','scipy','skimage')),
             'reconstruction_ready': bool(importlib.util.find_spec('pycolmap')) and all(engines.values()),
@@ -310,8 +333,11 @@ async def upload(files: Annotated[list[UploadFile], File()],
         raise HTTPException(422, '一次导入一个 PLY、GLB 或 STL 网格。')
     if kind == 'photos' and not system()['reconstruction_ready']:
         raise HTTPException(409, '本机尚未安装 OpenMVS，请先运行安装重建引擎脚本。')
-    if kind == 'single' and not system()['single_photo']['ready']:
-        raise HTTPException(409, system()['single_photo'].get('message', '请运行单图引擎检查。'))
+    if kind == 'single':
+        single = system()['single_photo']
+        engine_ready = single.get('shape21', {}).get('ready') if opts.get('shape_engine') == 'shape-2.1' else single['ready']
+        if not engine_ready:
+            raise HTTPException(409, single.get('shape21', {}).get('message') if opts.get('shape_engine') == 'shape-2.1' else single.get('message', '请运行单图引擎检查。'))
     if any(p.poll() is None for p in PROCESSES.values()):
         raise HTTPException(409, '已有任务正在运行。')
     path = DATA / uuid.uuid4().hex
@@ -392,7 +418,9 @@ def reprocess(job_id: str, options: Options):
         shutil.copy2(old / 'generation.json', path / 'generation.json')
     # Preserve photo-generation inputs so color alignment can be adjusted
     # without spending another inference run or mutating the original job.
-    for name in ('generated_raw.ply', 'foreground.png', 'diffusion_checkpoint.safetensors', 'shape_result.json', 'inference.json', 'input_region.json'):
+    for name in ('generated_raw.ply', 'generated_raw.glb', 'foreground.png', 'diffusion_checkpoint.safetensors',
+                 'diffusion_resume.safetensors', 'shape_latents.safetensors', 'shape_result.json',
+                 'inference.json', 'input_region.json'):
         if (old / name).is_file():
             shutil.copy2(old / name, path / name)
     return launch(path, {'kind': 'mesh', 'source_file': source.name, 'options': options.model_dump()})
@@ -406,7 +434,18 @@ def refine(job_id: str, options: Options):
         raise HTTPException(409, '需要已完成的单图模型及其形状断点。')
     path = DATA / uuid.uuid4().hex
     path.mkdir()
-    for name in ('foreground.png', 'diffusion_checkpoint.safetensors'):
+    inference = read_json(old/'inference.json') if (old/'inference.json').is_file() else {}
+    previous_request = read_json(old/'request.json') if (old/'request.json').is_file() else {}
+    old_engine = previous_request.get('options', {}).get('shape_engine', 'mini-turbo')
+    same_shape = (options.shape_engine == old_engine and options.shape_steps == inference.get('steps', 5)
+                  and options.shape_seed == inference.get('seed', 12345))
+    if not same_shape:
+        options.photo_landmarks = []
+    names = ['foreground.png']
+    if same_shape:
+        names += [name for name in ('diffusion_checkpoint.safetensors', 'diffusion_resume.safetensors',
+                                    'shape_latents.safetensors') if (old/name).is_file()]
+    for name in names:
         shutil.copy2(old / name, path / name)
     if (old / 'input_region.json').is_file():
         shutil.copy2(old / 'input_region.json', path / 'input_region.json')
@@ -441,6 +480,11 @@ def resume(job_id: str, options: Options):
     request = json.loads((path / 'request.json').read_text('utf-8'))
     if request.get('kind') != 'single':
         raise HTTPException(409, '只支持恢复单图生成任务。')
+    previous = request.get('options', {})
+    if (options.shape_engine != previous.get('shape_engine', 'mini-turbo')
+            or options.shape_steps != previous.get('shape_steps', 5)
+            or options.shape_seed != previous.get('shape_seed', 12345)):
+        raise HTTPException(409, '恢复断点需要保持原推理步数与种子；更换形状参数请重新生成。')
     request.update(resume=True, options=options.model_dump())
     return launch(path, request)
 
@@ -460,7 +504,7 @@ def download(job_id: str, filename: str):
     path = job_dir(job_id)
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', filename) or '..' in filename:
         raise HTTPException(404)
-    if filename in ('source.ply', 'source.glb', 'source.stl'):
+    if filename in ('source.ply', 'source.glb', 'source.stl', 'foreground.png', 'generated_raw.glb'):
         target = path / filename
     else:
         if state(path)['state'] != 'complete':

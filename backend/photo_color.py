@@ -28,7 +28,8 @@ def repair_tiny_holes(mesh, size_mm):
 
 def prepare_colored_bust(raw_path, foreground_path, destination, photo_pitch_deg=25, photo_yaw_deg=7,
                          color_style='photo', colors=4, photo_auto_align=True, palette_override=None,
-                         repair_small_holes=False, size_mm=95):
+                         repair_small_holes=False, size_mm=95, photo_landmarks=None,
+                         model_name='Hunyuan3D-2mini-Turbo'):
     if not (-45 <= photo_pitch_deg <= 60 and -60 <= photo_yaw_deg <= 60):
         raise ValueError('照片投影角度超出范围。')
     mesh = trimesh.load(raw_path, force='mesh', process=True)
@@ -72,15 +73,15 @@ def prepare_colored_bust(raw_path, foreground_path, destination, photo_pitch_deg
     photo = np.asarray(Image.open(foreground_path).convert('RGBA'))
     if color_style == 'flat':
         from .print_colors import project_flat_colors
-        provenance = project_flat_colors(mesh, photo, colors, photo_pitch_deg, photo_yaw_deg, photo_auto_align, palette_override)
+        provenance = project_flat_colors(mesh, photo, colors, photo_pitch_deg, photo_yaw_deg, photo_auto_align, palette_override, photo_landmarks)
         mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi/2, [1, 0, 0]))
         mesh.export(destination)
-        provenance.update(model='Hunyuan3D-2mini-Turbo', local=True,
+        provenance.update(model=model_name, local=True,
             small_hole_repair=hole_repair,
             removed_numerical_components=len(components)-len(kept),
             removed_degenerate_or_duplicate_faces=removed_faces, base_trim_volume_fraction=round(trimmed_fraction, 6),
             warnings=['纯色模式减弱明暗参与分色，不是头、手、衣服的语义识别；真实深色花纹也可能被合并。',
-                      '侧面与背面颜色按邻近可见区域延续，并非真实背面信息。请检查五官和材料边界。',
+                      '未见表面使用主体材料色，避免眼鼻色块绕到背面；背面花纹仍需要额外照片。',
                       '单张照片不能保证实物相似度或打印精度；底面已小幅裁平。'])
         write_json(destination.parent / 'generation.json', provenance)
         return provenance
@@ -121,7 +122,7 @@ def prepare_colored_bust(raw_path, foreground_path, destination, photo_pitch_deg
     mesh.export(destination)
     provenance = {
         'small_hole_repair': hole_repair,
-        'model': 'Hunyuan3D-2mini-Turbo', 'local': True,
+        'model': model_name, 'local': True,
         'color_method': 'front_photo_projection_with_dominant_color_on_unseen_surfaces',
         'photo_pitch_deg': photo_pitch_deg,
         'photo_yaw_deg': photo_yaw_deg,

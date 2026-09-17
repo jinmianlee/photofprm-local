@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--efficient-loading', action='store_true', help='Assign official tensors without disposable parameter initialization')
     parser.add_argument('--resolution', type=int, choices=[127, 255, 383], default=255)
+    parser.add_argument('--steps', type=int, choices=[5, 10, 15], default=5)
+    parser.add_argument('--seed', type=int, default=12345)
     parser.add_argument('--detail-roi', type=float, nargs=4, help='Experimental ROI in the prepared square image; not enabled in the web app')
     parser.add_argument('--detail-strength', type=float, default=.35)
     args = parser.parse_args()
@@ -31,7 +33,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     metrics = {'state': 'running', 'model': 'Hunyuan3D-2mini-Turbo', 'device': 'Intel Arc / XPU',
-               'steps': 5, 'resolution': args.resolution, 'seed': 12345, 'peak_rss_sampled_gib': 0.0,
+               'steps': args.steps, 'resolution': args.resolution, 'seed': args.seed, 'peak_rss_sampled_gib': 0.0,
                'memory_sampling': 'at_progress_updates_not_continuous',
                'weight_loading': 'direct_assignment' if args.efficient_loading else 'official_standard'}
     process = None
@@ -86,14 +88,14 @@ def main():
         if not torch.xpu.is_available():
             raise RuntimeError('Intel GPU 当前不可用，请查看 XPU 环境检查。')
         process = psutil.Process()
-        signature = generation_signature(args.input)
+        signature = generation_signature(args.input, args.steps, args.seed)
         if args.detail_roi:
             signature['conditioning_adapter'] = {'method': 'multiscale_dino_roi_v1',
                 'roi': args.detail_roi, 'strength': args.detail_strength}
         checkpoint = output / 'diffusion_checkpoint.safetensors'
         completed, latent = load_checkpoint(checkpoint, signature) if args.resume else (0, None)
         dtype, device = torch.float16, 'xpu'
-        if completed < 5:
+        if completed < args.steps:
             report('加载混元 2mini Turbo')
             if args.efficient_loading:
                 from model_loading import load_pipeline
@@ -117,21 +119,21 @@ def main():
                 torch.xpu.empty_cache()
                 # Keep the full original schedule when resuming. Passing fewer
                 # sigmas to this scheduler would create a different schedule.
-                pipeline.scheduler.set_timesteps(num_inference_steps=5, device=device)
+                pipeline.scheduler.set_timesteps(num_inference_steps=args.steps, device=device)
                 pipeline.scheduler.set_begin_index(completed)
                 if latent is None:
-                    latent = pipeline.prepare_latents(1, dtype, device, torch.Generator().manual_seed(12345))
+                    latent = pipeline.prepare_latents(1, dtype, device, torch.Generator().manual_seed(args.seed))
                 else:
                     latent = latent.to(device=device, dtype=dtype)
                 guidance = torch.tensor([5.0], device=device, dtype=dtype)
-                report('推断三维形状', diffusion_step=completed, diffusion_steps=5)
-                for index in range(completed, 5):
+                report('推断三维形状', diffusion_step=completed, diffusion_steps=args.steps)
+                for index in range(completed, args.steps):
                     t = pipeline.scheduler.timesteps[index]
                     timestep = t.expand(1).to(dtype) / pipeline.scheduler.config.num_train_timesteps
                     prediction = pipeline.model(latent, timestep, cond, guidance=guidance)
                     latent = pipeline.scheduler.step(prediction, t, latent).prev_sample
                     save_checkpoint(checkpoint, latent, index+1, signature)
-                    report('推断三维形状', diffusion_step=index+1, diffusion_steps=5)
+                    report('推断三维形状', diffusion_step=index+1, diffusion_steps=args.steps)
                 vae = pipeline.vae
                 del prediction, cond, pipeline
                 gc.collect()

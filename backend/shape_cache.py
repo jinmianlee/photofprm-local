@@ -16,9 +16,9 @@ def file_sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def generation_signature(input_path):
+def generation_signature(input_path, steps=5, seed=12345):
     return {'input_sha256': file_sha(input_path), 'weight_sha256': WEIGHT_SHA,
-            'steps': 5, 'seed': 12345, 'guidance': 5.0, 'dtype': 'float16',
+            'steps': steps, 'seed': seed, 'guidance': 5.0, 'dtype': 'float16',
             'num_latents': 3072, 'scheduler': 'ConsistencyFlowMatchEulerDiscreteScheduler'}
 
 
@@ -28,12 +28,12 @@ def record_shape(job, signature, resolution, mesh):
                'faces': len(mesh.faces), 'vertices': len(mesh.vertices), 'dimensions': mesh.extents.tolist()})
 
 
-def completed_shape(job, input_path, resolution=255):
+def completed_shape(job, input_path, resolution=255, steps=5, seed=12345):
     """Pure file check; never import torch or start a model process on a hit."""
     raw = job / 'generated_raw.ply'
     if not raw.is_file() or not 100 < raw.stat().st_size <= 200*1024**2:
         return False
-    signature = generation_signature(input_path)
+    signature = generation_signature(input_path, steps, seed)
     manifest = job / 'shape_result.json'
     try:
         if manifest.is_file():
@@ -56,7 +56,7 @@ def completed_shape(job, input_path, resolution=255):
             header = json.loads(stream.read(size))
         meta = header.get('__metadata__', {})
         tensor = header.get('latents', {})
-        if (json.loads(meta.get('signature', '{}')) != signature or meta.get('completed') != '5'
+        if (json.loads(meta.get('signature', '{}')) != signature or meta.get('completed') != str(steps)
                 or tensor.get('shape') != [1, 3072, 64] or tensor.get('dtype') != 'F16'):
             return False
         import numpy as np

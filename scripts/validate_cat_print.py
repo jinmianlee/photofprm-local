@@ -14,15 +14,19 @@ parser.add_argument('--mesh', required=True)
 parser.add_argument('--foreground', required=True)
 parser.add_argument('--output', required=True)
 parser.add_argument('--color-only', action='store_true')
+parser.add_argument('--colors', type=int, default=5)
+parser.add_argument('--pitch', type=float, default=.5)
+parser.add_argument('--model-name', default='Hunyuan3D-2mini-Turbo')
 args = parser.parse_args()
 output = Path(args.output)
 output.mkdir(parents=True, exist_ok=True)
 source = output / 'source.ply'
-provenance = prepare_colored_bust(Path(args.mesh), Path(args.foreground), source)
+provenance = prepare_colored_bust(Path(args.mesh), Path(args.foreground), source,
+                                  color_style='flat', colors=args.colors, model_name=args.model_name)
 print(json.dumps(provenance, ensure_ascii=False), flush=True)
 if not args.color_only:
     report = process_mesh(source, output / 'output',
-                          {'size_mm': 95, 'colors': 4, 'pitch_mm': .8,
+                          {'size_mm': 95, 'colors': args.colors, 'pitch_mm': args.pitch,
                            'min_feature_mm': .8, 'repair_small_holes': False},
                           lambda *args: print(args, flush=True), provenance=provenance)
     print(json.dumps(report, ensure_ascii=False), flush=True)

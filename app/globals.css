@@ -244,3 +244,19 @@ footer>span:first-child { display:flex; gap:6px; align-items:center; }
   .header-right button { max-width:none; }
   .header-right .quiet-button { display:none; }
 }
+/* Paired photo/model registration stays in one focused dialog. */
+.calibration-dialog{width:min(1080px,94vw)!important;max-width:1080px!important;max-height:94vh;overflow:auto}
+.calibration-tabs,.calibration-actions{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+.calibration-tabs button{padding:8px 12px;border:1px solid var(--border);border-radius:8px}
+.calibration-tabs button.active{background:#303e36;color:#c5e3a5}
+.calibration-columns{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.calibration-photo{position:relative;background:#172021;cursor:crosshair}
+.calibration-photo img{display:block;width:100%;height:auto}
+.calibration-dot{position:absolute;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:#111;pointer-events:none;font-size:12px;outline:2px solid white}
+.dot-0{background:#ff7b72}.dot-1{background:#66b5ff}.dot-2{background:#badf7e}
+.calibration-model{position:relative;height:440px;background:#12191c;cursor:crosshair}
+.calibration-actions{justify-content:flex-end}
+.photo-reference{position:absolute;top:62px;left:18px;width:clamp(90px,17%,160px);padding:8px;background:#1d2729dd;border:1px solid #4a5556;border-radius:9px;pointer-events:none}
+.photo-reference span{display:block;font-size:11px;color:#aab8b8;padding-bottom:7px}
+.photo-reference img{display:block;width:100%;border-radius:5px}
+@media(max-width:720px){.calibration-columns{grid-template-columns:1fr}.calibration-model{height:350px}}

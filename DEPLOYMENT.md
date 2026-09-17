@@ -75,6 +75,28 @@ Turbo 单个权重约 3.82 GB，还需运行环境、下载缓存、抠图模型
 
 本轮用已有官方文件完成了检查和生成。提供了全新安装脚本与固定版本，**但没有在另一台干净机器重新下载全部依赖**。旧 `prepare_single_photo.py` 默认准备标准 Mini CPU 实验，不是当前 Turbo 安装入口。
 
+## 可选：2.1 精细形状模型
+
+安装完成后，网页“形状模型”会出现“2.1 精细”；Mini 仍是快速默认。结果和限制见 [CAT_QUALITY.md](CAT_QUALITY.md)。先完成上面的 XPU 环境安装；此处不安装纹理模型、CUDA 渲染扩展或新驱动。模型另有腾讯社区许可，请阅读官方 `LICENSE`。
+
+```powershell
+# 仅检出官方形状 Python 包，避开训练样本的 Windows 长路径
+git clone --filter=blob:none --no-checkout https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git tools/Hunyuan3D-2.1
+git -C tools/Hunyuan3D-2.1 sparse-checkout set hy3dshape/hy3dshape
+git -C tools/Hunyuan3D-2.1 fetch origin 82920d643c0dc2f7bfd7255f45f62d386edfe60c
+git -C tools/Hunyuan3D-2.1 checkout --detach 82920d643c0dc2f7bfd7255f45f62d386edfe60c
+
+conda run --prefix .ai-env python -m pip install --no-deps --only-binary=:all: --index-url https://pypi.org/simple -r requirements-shape21.txt
+conda run --prefix .ai-env hf download tencent/Hunyuan3D-2.1 LICENSE Notice.txt README.md hunyuan3d-dit-v2-1/config.yaml hunyuan3d-dit-v2-1/model.fp16.ckpt --revision 0b94677654c57bb9a6b6845cd7b704ccf551d327 --local-dir models/hunyuan3d-2.1 --max-workers 1
+
+# 使用自己的透明前景照片，输出仍是未经打印验收的原始模型
+conda run --prefix .ai-env --no-capture-output python scripts/compare_shape21.py --input data/your-foreground.png --output data/shape21-trial --steps 50 --seed 1234 --resolution 255 --resume
+```
+
+已有 Conda 环境时，将 `.ai-env` 换为 `photoform.json` 中配置的路径。源码/模型放在别处可传 `--source` / `--model`。整包下载持续无进度时先正常取消，再用同一环境运行 `scripts/download_shape21.py`；只从原官方 HTTPS 地址分段下载，完成哈希校验前不提供可加载文件，分段缓存会额外占用约一份权重空间。不要同时运行两个下载器写同一目标。
+
+成功推理仍不代表忠实还原原照片，更不代表已可直接打印。对照正、侧、背面后，再在本应用导入修复后的网格进行打印检查与分色。本文未声称其他硬件上的端到端部署已通过。
+
 ## 局域网连接
 
 ```powershell

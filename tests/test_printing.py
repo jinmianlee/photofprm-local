@@ -64,6 +64,48 @@ def test_zip_contains_every_part_and_report(export):
         assert saved['checks']['wall_thickness_verified'] is False
 
 
+def test_preview_linear_materials_match_printable_srgb_palette(export):
+    root, report = export
+    raw = (root/'output'/'preview.glb').read_bytes()
+    size, kind = struct.unpack_from('<II', raw, 12)
+    assert kind == 0x4e4f534a
+    tree = json.loads(raw[20:20+size])
+    palette = {p['name']: p['color'] for p in report['parts']}
+    for material in tree['materials']:
+        linear = np.array(material['pbrMetallicRoughness']['baseColorFactor'][:3])
+        srgb = np.where(linear <= .0031308, 12.92*linear, 1.055*linear**(1/2.4)-.055)
+        expected = np.array([int(palette[material['name']][i:i+2],16) for i in (1,3,5)])
+        assert np.allclose(srgb*255, expected, atol=.01)
+    assert all('COLOR_0' not in primitive['attributes'] for mesh in tree['meshes'] for primitive in mesh['primitives'])
+
+
+def test_cut_material_preview_keeps_exterior_normals_and_print_geometry(tmp_path):
+    from backend.geometry import export_preview,from_manifold
+    from scipy.spatial import cKDTree
+    exterior=trimesh.creation.icosphere(subdivisions=3)
+    piece=from_manifold(to_manifold(exterior).trim_by_plane((1,0,0),0))
+    destination=tmp_path/'preview.glb'
+    export_preview([(piece,np.array([140,75,30]))],destination,exterior)
+    loaded=trimesh.load(destination,force='mesh',process=False)
+    raw=destination.read_bytes();size=struct.unpack_from('<I',raw,12)[0]
+    tree=json.loads(raw[20:20+size]);binary=20+size+8
+    attrs=tree['meshes'][0]['primitives'][0]['attributes']
+    def attribute(name):
+        accessor=tree['accessors'][attrs[name]]
+        view=tree['bufferViews'][accessor['bufferView']]
+        assert accessor['componentType']==5126 and accessor['type']=='VEC3'
+        return np.frombuffer(raw,dtype='<f4',count=accessor['count']*3,
+            offset=binary+view.get('byteOffset',0)+accessor.get('byteOffset',0)).reshape(-1,3)
+    # Scene-to-mesh import recalculates normals. Inspect the actual glTF
+    # attributes consumed by browser renderers instead of that import cache.
+    vertices,normals=attribute('POSITION'),attribute('NORMAL')
+    distance,index=cKDTree(exterior.vertices).query(vertices)
+    shared=distance<1.e-5
+    assert shared.sum()>100
+    assert np.allclose(normals[shared],exterior.vertex_normals[index[shared]],atol=1.e-5)
+    assert loaded.is_watertight and abs(loaded.volume-piece.volume)<1.e-5
+
+
 def test_open_surface_is_rejected(tmp_path):
     mesh = trimesh.creation.box()
     mesh.update_faces(np.arange(6))
@@ -148,3 +190,19 @@ def test_embedded_texture_is_sampled_inside_faces(tmp_path):
     assert len(np.unique(labels))==2
     assert any(c[0]>250 and c[2]<5 for c in colors)
     assert any(c[2]>250 and c[0]<5 for c in colors)
+
+
+def test_tiny_colored_fragments_merge_without_changing_the_print_solid(tmp_path):
+    # The blue body and red disconnected tiny islands form one source import.
+    # Material cleanup must merge the tiny islands, preserving all geometry.
+    body=trimesh.creation.icosphere(subdivisions=2,radius=5)
+    body.visual.face_colors=[170,120,70,255]
+    dots=[]
+    for x in [-1,1]:
+        dot=trimesh.creation.icosphere(subdivisions=2,radius=.2)
+        dot.apply_translation([x,0,5.4]);dot.visual.face_colors=[15,15,15,255];dots.append(dot)
+    source=tmp_path/'source.ply';trimesh.util.concatenate([body,*dots]).export(source)
+    report=process_mesh(source,tmp_path/'out',dict(size_mm=10,colors=2,pitch_mm=.25,min_feature_mm=.8,merge_small_islands=True),lambda *a:None)
+    assert report['sampling']['merged_small_material_islands']>=1
+    assert report['sampling']['partition_volume_relative_error']<1e-5
+    assert all(p['watertight'] and p['winding_consistent'] for p in report['parts'])

@@ -10,4 +10,4 @@
 - 多图重建：[COLMAP](https://github.com/colmap/colmap)、[OpenMVS](https://github.com/cdcseacave/openMVS)。
 - 前端及服务依赖的完整名称和固定版本见 `package-lock.json`、`requirements-lock.txt`、`requirements-xpu-installed.txt`。
 
-官方 2.1 训练资料在实验文档中仅作为后续适配参考，本仓库没有声称已完成其训练代码到 Mini Turbo 的移植。
+官方 2.1 训练资料提供后续适配参考，本仓库没有声称已完成其训练代码到 Mini Turbo 的移植。另有可选的离线 2.1 形状对照脚本；固定版本与文件哈希见 `CAT_QUALITY.md`，仍受腾讯自定义许可约束。额外依赖 [timm](https://github.com/huggingface/pytorch-image-models) 固定于 `requirements-shape21.txt`；不分发其权重。

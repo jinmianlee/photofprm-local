@@ -15,7 +15,7 @@ import trimesh
 import manifold3d as m3d
 from scipy.cluster.vq import kmeans2
 from scipy.spatial import cKDTree
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, distance_transform_edt, maximum_filter, minimum_filter
 from skimage.color import rgb2lab, lab2rgb
 from skimage.measure import marching_cubes
 from .settings import write_json
@@ -136,7 +136,7 @@ def palette_and_samples(mesh, count, balanced=False, fixed_palette=None):
     return points, labels, colors
 
 
-def partition(mesh, count, pitch, update, balanced=False, fixed_palette=None):
+def partition(mesh, count, pitch, update, balanced=False, fixed_palette=None, min_island_mm=0):
     source = to_manifold(mesh)
     points, labels, colors = palette_and_samples(mesh, count, balanced=balanced, fixed_palette=fixed_palette)
     if len(colors) == 1:
@@ -148,14 +148,38 @@ def partition(mesh, count, pitch, update, balanced=False, fixed_palette=None):
         suggested = pitch * (size/MAX_GRID_POINTS)**(1/3) * 1.03
         raise ValueError(f'该尺寸和分色间距需要 {size:,} 个采样点，超出本机任务上限。请将分色间距调至至少 {suggested:.2f} mm，或缩小模型。不会自动降低精度。')
     tree = cKDTree(points)
-    field = np.empty(size, dtype=np.uint8)
-    for start in range(0, size, 100_000):
-        idx = np.arange(start, min(start+100_000, size))
+    update(58, '建立表面材料种子，计算空间距离场')
+    cell=np.clip(np.rint((points-origin)/pitch).astype(int),0,shape-1)
+    seed_ids=np.ravel_multi_index(cell.T,tuple(shape))
+    displacement=np.sum((points-(cell*pitch+origin))**2,axis=1)
+    order=np.lexsort((displacement,seed_ids))
+    sorted_ids=seed_ids[order]
+    first=np.r_[True,sorted_ids[1:]!=sorted_ids[:-1]]
+    selected=order[first]
+    seed_field=np.full(size,255,dtype=np.uint8)
+    seed_field[seed_ids[selected]]=labels[selected]
+    seed_field=seed_field.reshape(tuple(shape))
+    nearest=distance_transform_edt(seed_field==255,return_distances=False,return_indices=True)
+    field=seed_field[tuple(nearest)]
+    del nearest,seed_field
+    # EDT gives a bounded-grid approximation quickly. Query the original
+    # continuous samples throughout a two-cell band at every material change
+    # so small visible markings are not limited by snapped surface seeds.
+    changes=maximum_filter(field,size=3)!=minimum_filter(field,size=3)
+    boundary=maximum_filter(changes,size=3)
+    indices=np.flatnonzero(boundary)
+    del changes,boundary
+    flat=field.reshape(-1)
+    for start in range(0, len(indices), 100_000):
+        idx = indices[start:start+100_000]
         coords = np.column_stack(np.unravel_index(idx, tuple(shape))) * pitch + origin
-        field[idx] = labels[tree.query(coords, workers=2)[1]]
-    field = field.reshape(tuple(shape))
+        flat[idx] = labels[tree.query(coords, workers=2)[1]]
+        if start==0 or start+100_000>=len(indices) or start%500_000==0:
+            update(60, f'精确细化材料边界 · {min(start+100_000,len(indices)):,}/{len(indices):,} 点')
     remainder = source
     parts = []
+    merged_count=0
+    merged_volume=0.
     # Dominant color gets the remainder. Small colors carved first.
     order = sorted(range(len(colors)), key=lambda k: np.count_nonzero(labels == k))
     for position, color_id in enumerate(order):
@@ -181,6 +205,33 @@ def partition(mesh, count, pitch, update, balanced=False, fixed_palette=None):
             remainder = remainder - cutter
         if piece.is_empty():
             continue
+        if min_island_mm>0:
+            components=piece.decompose()
+            small=[c for c in components if 0<c.volume()<min_island_mm**3]
+            large=[c for c in components if not 0<c.volume()<min_island_mm**3]
+            if small and position<len(order)-1:
+                # Return sub-printable islands to the unassigned core. This
+                # changes material ownership only, preserving the exterior.
+                remainder=remainder+m3d.Manifold.batch_boolean(small,m3d.OpType.Add)
+                piece=m3d.Manifold.batch_boolean(large,m3d.OpType.Add)
+                merged_count+=len(small);merged_volume+=sum(c.volume() for c in small)
+            elif small and parts:
+                # A core sliver surrounded by a colored region is reassigned
+                # to its nearest adjacent material, joining its shared faces.
+                trees=[cKDTree(p.vertices) for p,_ in parts]
+                for island in small:
+                    island_mesh=from_manifold(island)
+                    distances=[tree.query(island_mesh.vertices)[0].min() for tree in trees]
+                    target=int(np.argmin(distances))
+                    combined=to_manifold(parts[target][0])+island
+                    candidate=from_manifold(combined)
+                    if combined.status()!=m3d.Error.NoError or not candidate.is_watertight or not candidate.is_winding_consistent:
+                        large.append(island);continue
+                    parts[target]=(candidate,parts[target][1])
+                    merged_count+=1;merged_volume+=island.volume()
+                piece=m3d.Manifold.batch_boolean(large,m3d.OpType.Add)
+            if piece.is_empty():
+                continue
         if piece.status() != m3d.Error.NoError:
             raise ValueError('分色布尔运算未通过实体检查，请增大分色间距后重试。')
         part = from_manifold(piece)
@@ -194,6 +245,12 @@ def partition(mesh, count, pitch, update, balanced=False, fixed_palette=None):
     return parts, {'grid_points': size, 'pitch_mm': pitch,
                    'material_boundary_smoothing_sigma_mm': pitch*.6,
                    'material_region_isovalue': .505,
+                   'material_field_method': 'surface_seed_edt_with_exact_boundary_queries',
+                   'exact_boundary_queries': len(indices),
+                   'surface_seed_max_snap_mm': pitch*np.sqrt(3)/2,
+                   'merged_small_material_islands': merged_count,
+                   'merged_material_volume_mm3': round(merged_volume,5),
+                   'island_volume_threshold_mm3': min_island_mm**3,
                    'palette_method': 'flat_photo_palette' if fixed_palette is not None else 'balanced_lab_bins' if balanced else 'area_weighted_lab',
                    'partition_volume_relative_error': relative_error}
 
@@ -253,6 +310,55 @@ def make_demo(path):
     mesh.export(path)
 
 
+def export_preview(parts, path, exterior=None):
+    """glTF material factors are linear RGB; printable palette/3MF are sRGB."""
+    scene = trimesh.Scene()
+    factors = {}
+    surface_tree = cKDTree(exterior.triangles_center) if exterior is not None else None
+    source_normals = exterior.vertex_normals if exterior is not None else None
+    for i, (part, color) in enumerate(parts):
+        name = f'part_{i+1:02d}_' + ''.join(f'{int(c):02x}' for c in color)
+        rgb = np.asarray(color, dtype=float) / 255.
+        linear = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+        factors[name] = [*linear.tolist(), 1.]
+        preview = part.copy()
+        if surface_tree is not None:
+            # Internal material walls distort automatically averaged normals
+            # along shared exterior edges. Interpolate the uncut source's
+            # normals only at vertices verified to lie on that surface.
+            # This changes display normals, never positions or print geometry.
+            normals = preview.vertex_normals.copy()
+            tolerance = max(exterior.extents)*1.e-6
+            k = min(8, len(exterior.faces))
+            for start in range(0,len(preview.vertices),10000):
+                points = preview.vertices[start:start+10000]
+                ids = surface_tree.query(points,k=k)[1].reshape(len(points),k)
+                triangles = exterior.triangles[ids]
+                closest = trimesh.triangles.closest_point(triangles.reshape(-1,3,3),np.repeat(points,k,axis=0)).reshape(len(points),k,3)
+                distances = np.sum((closest-points[:,None])**2,axis=2)
+                best = distances.argmin(axis=1); rows = np.arange(len(points))
+                mask = distances[rows,best] <= tolerance**2
+                if mask.any():
+                    chosen = ids[rows,best][mask]
+                    weights = trimesh.triangles.points_to_barycentric(exterior.triangles[chosen],closest[rows,best][mask])
+                    smooth = np.sum(source_normals[exterior.faces[chosen]]*weights[:,:,None],axis=1)
+                    smooth /= np.maximum(np.linalg.norm(smooth,axis=1,keepdims=True),1.e-12)
+                    normals[start+np.flatnonzero(mask)] = smooth
+        preview.visual = trimesh.visual.texture.TextureVisuals(
+            material=trimesh.visual.material.PBRMaterial(
+                name=name, baseColorFactor=[255,255,255,255],
+                roughnessFactor=.8, metallicFactor=0.))
+        if surface_tree is not None:
+            preview.vertex_normals = normals
+        scene.add_geometry(preview, node_name=name, geom_name=name)
+
+    def correct_materials(tree):
+        for material in tree.get('materials', []):
+            material['pbrMetallicRoughness']['baseColorFactor'] = factors[material['name']]
+
+    Path(path).write_bytes(scene.export(file_type='glb', tree_postprocessor=correct_materials))
+
+
 def process_mesh(source, output, options, update, provenance=None):
     output = Path(output)
     output.mkdir(exist_ok=True)
@@ -262,22 +368,20 @@ def process_mesh(source, output, options, update, provenance=None):
     update(57, '提取照片颜色，计算实体分区')
     parts, sampling = partition(mesh, options['colors'], options['pitch_mm'], update,
                                 balanced=bool(provenance and provenance.get('color_method')),
-                                fixed_palette=(provenance or {}).get('flat_palette_rgb'))
+                                fixed_palette=(provenance or {}).get('flat_palette_rgb'),
+                                min_island_mm=options['min_feature_mm'] if options.get('merge_small_islands',True) else 0)
     update(92, '检查分体并写入 STL / 3MF')
-    scene = trimesh.Scene()
     manifest = []
     for i, (part, color) in enumerate(parts):
         name = f'part_{i+1:02d}_' + ''.join(f'{int(c):02x}' for c in color)
         part.export(output / (name + '.stl'))
-        part.visual.vertex_colors = np.r_[color, 255]
-        scene.add_geometry(part, node_name=name, geom_name=name)
         entry = mesh_report(part)
         entry.update(name=name, color='#'+''.join(f'{int(c):02x}' for c in color), file=name+'.stl')
         # Component volume is a practical island indicator, not a wall-thickness guarantee.
         components = part.split(only_watertight=False)
         entry['small_islands'] = int(sum(abs(c.volume) < options['min_feature_mm']**3 for c in components))
         manifest.append(entry)
-    (output / 'preview.glb').write_bytes(scene.export(file_type='glb'))
+    export_preview(parts, output/'preview.glb',mesh)
     mesh.export(output / 'combined.stl')
     export_3mf(parts, output / 'colored.3mf')
     warnings = ['照片重建无绝对尺寸：这里以模型最长边缩放为设定的毫米数，请用实物尺寸校准。',

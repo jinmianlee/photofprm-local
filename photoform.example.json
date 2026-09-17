@@ -3,5 +3,7 @@
   "conda": "C:/miniconda3/Scripts/conda.exe",
   "model_dir": "models/hunyuan3d-2mini/hunyuan3d-dit-v2-mini-turbo",
   "source_dir": "tools/hunyuan3d",
+  "shape21_model_dir": "models/Hunyuan3D-2.1/hunyuan3d-dit-v2-1",
+  "shape21_source_dir": "tools/Hunyuan3D-2.1",
   "rembg_dir": "models/rembg"
 }

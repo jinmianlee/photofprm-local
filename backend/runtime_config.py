@@ -27,7 +27,9 @@ def config():
     return {'ai_env': env, 'conda': os.path.normcase(str(conda)),
             'model_dir': path('model_dir', 'models/hunyuan3d-2mini/hunyuan3d-dit-v2-mini-turbo'),
             'source_dir': path('source_dir', 'tools/hunyuan3d'),
-            'rembg_dir': path('rembg_dir', 'models/rembg')}
+            'rembg_dir': path('rembg_dir', 'models/rembg'),
+            'shape21_model_dir': path('shape21_model_dir', 'models/hunyuan3d-2.1/hunyuan3d-dit-v2-1'),
+            'shape21_source_dir': path('shape21_source_dir', 'tools/Hunyuan3D-2.1')}
 
 
 def fingerprint(values=None):
@@ -35,7 +37,8 @@ def fingerprint(values=None):
     paths = [c['ai_env']/'python.exe', c['ai_env']/'Lib/site-packages/torch/__init__.py',
              c['model_dir']/'model.fp16.safetensors', c['model_dir']/'config.yaml',
              c['source_dir']/'hy3dgen/shapegen/pipelines.py', c['rembg_dir']/'u2net.onnx']
-    result = {'paths': {key: str(value) for key, value in c.items()}, 'files': []}
+    mini_keys = ('ai_env', 'conda', 'model_dir', 'source_dir', 'rembg_dir')
+    result = {'paths': {key: str(c[key]) for key in mini_keys}, 'files': []}
     for path in paths:
         info = path.stat() if path.is_file() else None
         result['files'].append({'path': str(path), 'size': info.st_size if info else None,

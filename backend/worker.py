@@ -60,7 +60,8 @@ def main(job):
                     photo_auto_align=request['options'].get('photo_auto_align', True),
                     palette_override=request['options'].get('palette_override'),
                     repair_small_holes=request['options'].get('repair_small_holes', False),
-                    size_mm=request['options'].get('size_mm', 95))
+                    size_mm=request['options'].get('size_mm', 95), photo_landmarks=request['options'].get('photo_landmarks'),
+                    model_name=(provenance or {}).get('model', 'Hunyuan3D-2mini-Turbo'))
         if provenance is not None and (job / 'input_region.json').is_file():
             provenance['input_region'] = read_json(job / 'input_region.json')
             provenance.setdefault('warnings', []).append('本次仅生成框选部位的独立模型，未与整图模型自动拼接。')

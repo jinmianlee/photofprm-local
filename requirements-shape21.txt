@@ -1,0 +1,3 @@
+# Additional dependency for the optional offline 2.1 shape comparison.
+# Use the existing verified XPU environment; do not replace PyTorch.
+timm==1.0.15

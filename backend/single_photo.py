@@ -40,10 +40,24 @@ def capability():
     except (OSError, ValueError, TypeError) as error:
         ready, installed, size = False, False, 0
         message = '本机 photoform.json 配置无法读取：' + str(error)[:250]
+    shape21 = shape21_capability()
     return {'ready': ready, 'installed': bool(installed), 'model': 'Hunyuan3D-2mini-Turbo',
             'device': 'Intel Arc / XPU', 'download_bytes': size,
             'download_total': 3822584202,
-            'download_state': 'verified' if ready else 'check_required', 'message': message}
+            'download_state': 'verified' if ready else 'check_required', 'message': message,
+            'shape21': shape21}
+
+
+def shape21_capability():
+    try:
+        c = config(); weight = c['shape21_model_dir']/'model.fp16.ckpt'
+        cfg = c['shape21_model_dir']/'config.yaml'
+        source = c['shape21_source_dir']/'hy3dshape/hy3dshape/pipelines.py'
+        installed = weight.is_file() and weight.stat().st_size == 7366389768 and cfg.is_file() and source.is_file()
+    except (OSError, ValueError, TypeError):
+        installed = False
+    return {'ready': installed, 'installed': installed, 'model': 'Hunyuan3D-Shape-2.1',
+            'message': '2.1 精细形状已就绪' if installed else '2.1 精细形状未安装；可继续使用 Mini。'}
 
 
 def run_stage(arguments, update, job=None):
@@ -60,9 +74,9 @@ def run_stage(arguments, update, job=None):
                 status = read_json(job / 'inference.json')
                 if status:
                     stage = status.get('stage', '生成三维形状')
-                    if stage == '推断三维形状':
+                    if stage in ('推断三维形状', 'Infer official 2.1 shape'):
                         current, total = status.get('diffusion_step', 0), status.get('diffusion_steps', 30)
-                        update(12 + round(current/max(total, 1)*25), f'{stage} · {current}/{total} 步')
+                        update(12 + round(current/max(total, 1)*25), f'推断三维形状 · {current}/{total} 步')
                     elif stage == '细化三维表面':
                         resolution = status.get('grid_resolution', 63)
                         fraction = status.get('samples_done', 0)/max(status.get('samples_total', 1), 1)
@@ -81,23 +95,36 @@ def run_stage(arguments, update, job=None):
 
 
 def reconstruct(job, options, update, resume=False):
-    if not capability()['ready']:
+    engine = options.get('shape_engine', 'mini-turbo')
+    available = capability()
+    if engine == 'shape-2.1':
+        if not available['shape21']['ready']:
+            raise RuntimeError('本地 Hunyuan3D 2.1 精细形状模型尚未安装。')
+    elif not available['ready']:
         raise RuntimeError('本地单图引擎尚未通过实际生成验证。')
     foreground = job / 'foreground.png'
     resolution = options.get('mesh_resolution', 255)
+    steps, seed = options.get('shape_steps', 5), options.get('shape_seed', 12345)
     if not resume or not foreground.is_file():
         update(5, '本地去除照片背景')
         with timed_phase(job, 'foreground'):
             run_stage([ROOT / 'backend/foreground.py', '--input', job / 'images/photo_0000.png', '--output', foreground], update)
     with timed_phase(job, 'completed_shape_check'):
-        reuse = resume and completed_shape(job, foreground, resolution)
+        reuse = resume and engine == 'mini-turbo' and completed_shape(job, foreground, resolution, steps, seed)
     if reuse:
         update(56, '复用已完成的原始网格，直接进行打印处理')
     else:
-        update(10, '载入混元 2mini')
+        update(10, '载入混元 2.1 精细形状' if engine == 'shape-2.1' else '载入混元 2mini')
         with timed_phase(job, 'shape_inference_and_extraction'):
-            run_stage([ROOT / 'backend/single_photo_turbo.py', '--input', foreground, '--output', job,
-                       '--resolution', str(resolution), '--efficient-loading', *(['--resume'] if resume else [])], update, job)
+            if engine == 'shape-2.1':
+                c = config()
+                run_stage([ROOT/'scripts/compare_shape21.py', '--input', foreground, '--output', job,
+                           '--source', c['shape21_source_dir'], '--model', c['shape21_model_dir'],
+                           '--resolution', str(resolution), '--steps', str(steps), '--seed', str(seed),
+                           *(['--resume'] if resume else [])], update, job)
+            else:
+                run_stage([ROOT / 'backend/single_photo_turbo.py', '--input', foreground, '--output', job,
+                           '--resolution', str(resolution), '--steps', str(steps), '--seed', str(seed), '--efficient-loading', *(['--resume'] if resume and (job/'diffusion_checkpoint.safetensors').is_file() else [])], update, job)
     update(57, '整理底面并投影照片颜色')
     from .photo_color import prepare_colored_bust
     source = job / 'source.ply'
@@ -108,5 +135,6 @@ def reconstruct(job, options, update, resume=False):
                                         photo_auto_align=options.get('photo_auto_align', True),
                                         palette_override=options.get('palette_override'),
                                         repair_small_holes=options.get('repair_small_holes', False),
-                                        size_mm=options.get('size_mm', 95))
+                                        size_mm=options.get('size_mm', 95), photo_landmarks=options.get('photo_landmarks'),
+                                        model_name='Hunyuan3D-Shape-2.1' if engine == 'shape-2.1' else 'Hunyuan3D-2mini-Turbo')
     return source, provenance

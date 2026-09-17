@@ -3,11 +3,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-type Props = { url?: string; exploded: number; wireframe: boolean; hidden: string[]; reset: number; unlit: boolean };
-export function ModelViewer({ url, exploded, wireframe, hidden, reset, unlit }: Props) {
+type Props = { url?: string; exploded: number; wireframe: boolean; hidden: string[]; reset: number; unlit: boolean; upAxis?: 'y'|'z'; onPick?: (point: number[]) => void; marks?: (number[]|undefined)[]; view?:'photo'|'front'|'orbit'; photoPitch?:number;photoYaw?:number };
+export function ModelViewer({ url, exploded, wireframe, hidden, reset, unlit, upAxis='z', onPick, marks=[],view='orbit',photoPitch=0,photoYaw=0 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const parts = useRef<THREE.Mesh[]>([]);
   const resetView = useRef<() => void>(() => {});
+  const pick = useRef(onPick); pick.current=onPick;
+  const preset=useRef({view,photoPitch,photoYaw});preset.current={view,photoPitch,photoYaw};
+  const markerGroup = useRef<THREE.Group|undefined>(undefined);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   useEffect(() => {
@@ -50,12 +53,14 @@ export function ModelViewer({ url, exploded, wireframe, hidden, reset, unlit }: 
       new GLTFLoader().load(url, gltf => {
         if (!alive) { disposeModel(gltf.scene); return; }
         model = new THREE.Group();
-        gltf.scene.rotation.x = -Math.PI / 2;
+        gltf.scene.rotation.x = upAxis==='z' ? -Math.PI / 2 : 0;
         model.add(gltf.scene); scene.add(model);
         const box = new THREE.Box3().setFromObject(model);
         const center = box.getCenter(new THREE.Vector3());
         model.position.set(-center.x, -box.min.y + .1, -center.z);
         const max = Math.max(...box.getSize(new THREE.Vector3()).toArray());
+        controls.minDistance=max*.15; controls.maxDistance=max*20;
+        markerGroup.current=new THREE.Group(); gltf.scene.add(markerGroup.current);
         grid.scale.setScalar(Math.max(max / 100, .2));
         parts.current = [];
         gltf.scene.traverse(o => { if (o instanceof THREE.Mesh) {
@@ -75,12 +80,30 @@ export function ModelViewer({ url, exploded, wireframe, hidden, reset, unlit }: 
         }});
         resetView.current = () => {
           controls.target.set(0, box.getSize(new THREE.Vector3()).y*.46, 0);
-          camera.position.set(max*1.55, max*1.25, max*1.75);
+          const choice=preset.current;
+          if(upAxis==='y'||choice.view==='front')camera.position.copy(controls.target).add(new THREE.Vector3(0,0,max*2.8));
+          else if(choice.view==='photo'){
+            const p=THREE.MathUtils.degToRad(choice.photoPitch),y=THREE.MathUtils.degToRad(choice.photoYaw);
+            camera.position.copy(controls.target).addScaledVector(new THREE.Vector3(-Math.sin(y)*Math.cos(p),Math.sin(p),Math.cos(y)*Math.cos(p)),max*2.8);
+          }else camera.position.set(max*1.55,max*1.25,max*1.75);
           controls.update();
         };
         resetView.current(); setLoading(false);
       }, undefined, () => { if (alive) { setLoading(false); setError('模型预览载入失败，可尝试重新选择任务。'); } });
     }
+    let pressed: {x:number;y:number}|undefined;
+    const pointerDown=(event:PointerEvent)=>{pressed={x:event.clientX,y:event.clientY};};
+    const pointerUp=(event:PointerEvent)=>{
+      if(!pick.current||!pressed||Math.hypot(event.clientX-pressed.x,event.clientY-pressed.y)>5)return;
+      pressed=undefined;
+      const rect=renderer.domElement.getBoundingClientRect();
+      const ray=new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
+      const hit=ray.intersectObjects(parts.current,false)[0];
+      if(hit) pick.current(hit.object.worldToLocal(hit.point.clone()).toArray());
+    };
+    renderer.domElement.addEventListener('pointerdown',pointerDown);
+    renderer.domElement.addEventListener('pointerup',pointerUp);
     const observer = new ResizeObserver(() => {
       const { width, height } = mount.getBoundingClientRect();
       if (!width || !height) return;
@@ -92,11 +115,19 @@ export function ModelViewer({ url, exploded, wireframe, hidden, reset, unlit }: 
     animate();
     return () => {
       alive=false; cancelAnimationFrame(frame); observer.disconnect(); controls.dispose();
+      renderer.domElement.removeEventListener('pointerdown',pointerDown); renderer.domElement.removeEventListener('pointerup',pointerUp);
+      markerGroup.current=undefined;
       if (model) disposeModel(model); grid.geometry.dispose();
       (grid.material as THREE.Material).dispose(); parts.current=[];
       renderer.dispose(); renderer.domElement.remove();
     };
-  }, [url]);
+  }, [url,upAxis]);
+  useEffect(()=>{
+    const group=markerGroup.current;if(!group)return;
+    for(const child of [...group.children]){const marker=child as THREE.Mesh;marker.geometry.dispose();(marker.material as THREE.Material).dispose();group.remove(child);}
+    const colors=[0xff7b72,0x66b5ff,0xbadf7e];
+    marks.forEach((point,i)=>{if(!point)return;const marker=new THREE.Mesh(new THREE.SphereGeometry(.016,12,8),new THREE.MeshBasicMaterial({color:colors[i%3],depthTest:false}));marker.position.fromArray(point);marker.renderOrder=2;group.add(marker);});
+  },[marks,loading]);
   useEffect(() => {
     parts.current.forEach((part, i) => {
       const original = part.userData.originalPosition as THREE.Vector3;
@@ -109,7 +140,7 @@ export function ModelViewer({ url, exploded, wireframe, hidden, reset, unlit }: 
       materials.forEach(m => { if ('wireframe' in m) (m as THREE.MeshStandardMaterial).wireframe=wireframe; });
     });
   }, [exploded, wireframe, hidden, loading, unlit]);
-  useEffect(() => { resetView.current(); }, [reset]);
+  useEffect(() => { resetView.current(); }, [reset,view,photoPitch,photoYaw]);
   return <><div ref={container} className="three-canvas" aria-label="三维模型预览，拖动旋转、滚轮缩放" />
     {loading && <div className="viewer-message">载入三维模型…</div>}
     {error && <div className="viewer-message error" role="alert">{error}</div>}</>;

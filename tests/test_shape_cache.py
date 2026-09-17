@@ -19,6 +19,8 @@ def test_reuse_rejects_different_image_resolution_or_changed_mesh(tmp_path):
     image, raw = cache(tmp_path)
     assert completed_shape(tmp_path, image)
     assert not completed_shape(tmp_path, image, resolution=127)
+    assert not completed_shape(tmp_path, image, steps=15)
+    assert not completed_shape(tmp_path, image, seed=999)
     image.write_bytes(b'another photo')
     assert not completed_shape(tmp_path, image)
     image.write_bytes(b'current photo')
